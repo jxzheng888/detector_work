@@ -1,0 +1,23 @@
+/control/verbose 1
+/run/verbose 1
+/tracking/verbose 0
+
+/therapy/geometry/tumorCenterFromRight 5 cm
+/therapy/geometry/tumorCenterFromTop 25 cm
+/therapy/geometry/tumorCellFraction 0.80
+/therapy/geometry/boronModel none
+/therapy/geometry/boronPPM 0
+
+/therapy/source/particle proton
+/therapy/source/energy 75 MeV
+/therapy/source/sourceX 22 cm
+/therapy/source/beamHalfY 0.8 cm
+/therapy/source/beamHalfZ 1.8 cm
+/therapy/source/directionX -1
+/therapy/source/directionY 0
+/therapy/source/directionZ 0
+
+/run/setCut 0.1 um
+/run/initialize
+/therapy/output/fileName proton_75MeV
+/run/beamOn 10000

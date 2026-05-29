@@ -1,0 +1,12 @@
+.DS_Store
+build/
+*.root
+*.csv
+*.log
+*.out
+__pycache__/
+*.pyc
+
+# Course handouts and local assignment screenshots are kept out of the code repo.
+*.pdf
+*.png

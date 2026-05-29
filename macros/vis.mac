@@ -1,0 +1,27 @@
+/control/verbose 1
+/run/verbose 1
+
+/therapy/geometry/tumorCenterFromRight 5 cm
+/therapy/geometry/tumorCenterFromTop 25 cm
+/therapy/geometry/tumorCellFraction 0.80
+/therapy/geometry/boronModel shell
+/therapy/geometry/boronPPM 40
+
+/therapy/source/particle proton
+/therapy/source/energy 75 MeV
+/therapy/source/sourceX 22 cm
+/therapy/source/beamHalfY 0.8 cm
+/therapy/source/beamHalfZ 1.8 cm
+
+/run/setCut 0.1 um
+/run/initialize
+
+/vis/open OGL
+/vis/viewer/set/background white
+/vis/drawVolume
+/vis/viewer/set/viewpointThetaPhi 75 35
+/vis/viewer/zoom 1.6
+/vis/scene/add/trajectories smooth
+/vis/scene/add/hits
+/tracking/storeTrajectory 1
+/run/beamOn 20
