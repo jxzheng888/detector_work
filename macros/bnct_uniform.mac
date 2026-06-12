@@ -19,5 +19,5 @@
 
 /run/setCut 0.1 um
 /run/initialize
-/therapy/output/fileName bnct_uniform_40ppm
+/therapy/output/fileName bnct_uniform_40ppm.root
 /run/beamOn 20000

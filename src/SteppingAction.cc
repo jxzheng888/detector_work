@@ -3,6 +3,7 @@
 #include "EventAction.hh"
 #include "SimulationConfig.hh"
 
+#include "G4AnalysisManager.hh"
 #include "G4Event.hh"
 #include "G4LogicalVolume.hh"
 #include "G4ParticleDefinition.hh"
@@ -10,7 +11,6 @@
 #include "G4Step.hh"
 #include "G4SystemOfUnits.hh"
 #include "G4Track.hh"
-#include "g4root.hh"
 
 SteppingAction::SteppingAction(EventAction* eventAction)
     : fEventAction(eventAction)

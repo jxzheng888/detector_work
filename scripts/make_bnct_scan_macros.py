@@ -22,7 +22,7 @@ TEMPLATE = """/control/verbose 1
 
 /run/setCut 0.1 um
 /run/initialize
-/therapy/output/fileName bnct_{model}_{ppm}ppm
+/therapy/output/fileName bnct_{model}_{ppm}ppm.root
 /run/beamOn {events}
 """
 

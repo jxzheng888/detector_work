@@ -2,10 +2,10 @@
 
 #include "DetectorConstruction.hh"
 
+#include "G4AnalysisManager.hh"
 #include "G4GenericMessenger.hh"
 #include "G4Run.hh"
 #include "G4SystemOfUnits.hh"
-#include "g4root.hh"
 
 RunAction::RunAction(const DetectorConstruction* detector)
     : fDetector(detector)

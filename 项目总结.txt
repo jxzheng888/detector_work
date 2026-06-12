@@ -1,0 +1,734 @@
+================================================================================
+          Geant4 放射治疗蒙特卡罗模拟 —— 项目总结
+================================================================================
+
+一、任务目标
+--------------------------------------------------------------------------------
+
+本项目是一个基于 Geant4 的放射治疗蒙特卡罗模拟，属于"探测器模拟与数据
+分析"课程（2026）的作业。包含两个研究课题：
+
+课题 1：Gamma 与质子放疗对比
+    用 6 MeV γ 射线和 75 MeV 质子分别照射一个简化的人体模型（水等效体模），
+    比较三种代表性细胞（肿瘤细胞、肿瘤区内正常细胞、远处健康正常细胞）所
+    接收的剂量（Gy）和线能/LET 谱。
+
+课题 2：硼中子俘获治疗（BNCT）
+    用 0.5 eV 热中子照射体模，肿瘤细胞含有 ¹⁰B。对比两种 ¹⁰B 分布
+    模型——均匀分布 vs 细胞外壳（1 μm）分布——研究亚细胞尺度上硼分布
+    对肿瘤/正常细胞剂量的影响。
+
+
+二、Geant4 框架的搭建逻辑
+--------------------------------------------------------------------------------
+
+项目严格遵循 Geant4 的标准"用户类"架构：
+
+    main.cc
+      │
+      ├─ G4RunManager（运行管理器）
+      │    ├─ DetectorConstruction    ← 几何与材料
+      │    ├─ PhysicsList (QGSP_BIC_HP) ← 物理过程
+      │    └─ ActionInitialization    ← 事件行为
+      │         ├─ PrimaryGeneratorAction ← 粒子源
+      │         ├─ RunAction              ← 运行级输出
+      │         ├─ EventAction            ← 事件级累加
+      │         └─ SteppingAction         ← 步级计分
+      │
+      └─ G4UIExecutive / G4UImanager  ← 交互界面或批处理宏
+
+各类职责如下：
+
+┌─────────────────────────┬──────────────────────────────────────────────────────┐
+│ Geant4 用户类           │ 本项目实现的功能                                      │
+├─────────────────────────┼──────────────────────────────────────────────────────┤
+│ DetectorConstruction    │ 构建世界体积（3 m 空气立方体）→ 人体体模（躯干+颈部   │
+│                         │ +头部+双腿，水材料）→ 肿瘤区域（20×10×30 mm）→ 3 个  │
+│                         │ 10 μm 球形细胞（肿瘤、肿瘤内正常、远处正常）；通过宏  │
+│                         │ 命令动态切换硼浓度（ppm）和分布模型（uniform/shell）；  │
+│                         │ 对细胞体积施加 1 μm 步长限制以保证计分精度             │
+├─────────────────────────┼──────────────────────────────────────────────────────┤
+│ PrimaryGeneratorAction  │ 使用 G4ParticleGun，从右侧向肿瘤中心发射矩形野均匀    │
+│                         │ 分布的单粒子束；粒子种类（γ/p/n）和能量均通过宏命令    │
+│                         │ 配置                                                  │
+├─────────────────────────┼──────────────────────────────────────────────────────┤
+│ SteppingAction          │ 核心计分逻辑：每步判断是否在三个细胞体积内，累加能量    │
+│                         │ 沉积和径迹长度，计算每步 LET 代理值（edep/step_length）│
+│                         │ 写入 ROOT ntuple                                       │
+├─────────────────────────┼──────────────────────────────────────────────────────┤
+│ EventAction             │ 事件结束后汇总每个细胞的总 edep 和径迹长度，计算剂量   │
+│                         │ （Gy）和线能（keV/μm，使用 4R/3 平均弦长 ≈ 6.67 μm）│
+│                         │ 同时计算加权肿瘤区混合分数                              │
+├─────────────────────────┼──────────────────────────────────────────────────────┤
+│ RunAction               │ 通过 G4AnalysisManager 管理 ROOT 输出文件，预订所有    │
+│                         │ 直方图和 ntuple                                         │
+├─────────────────────────┼──────────────────────────────────────────────────────┤
+│ ActionInitialization    │ 将上述四个 Action 类组装并注册到 RunManager             │
+└─────────────────────────┴──────────────────────────────────────────────────────┘
+
+
+三、关键 Geant4 功能的使用方式
+--------------------------------------------------------------------------------
+
+1. 物理列表 QGSP_BIC_HP
+   包含高精度低能中子截面数据，是 BNCT 模拟的必要条件。
+
+2. G4StepLimiterPhysics
+   在 main.cc 中注册，配合 G4UserLimits 在细胞体积内强制 1 μm 最大步长，
+   确保微米级小体积中的能量沉积不被"跳过"。
+
+3. 宏命令系统（G4UIcmdWith*）
+   通过 /therapy/geometry/、/therapy/source/、/therapy/output/ 自定义命令树，
+   使几何参数（肿瘤位置、硼浓度、分布模型）和束流参数（粒子、能量、方向、
+   野大小）无需重编译即可调整。
+
+4. G4AnalysisManager（ROOT 后端）
+   输出包含两个 ntuple（events：每事件每细胞一行；steps：每步一行）和多个
+   直方图（剂量谱、LET 谱），直接供 ROOT 分析脚本 plot_results.C 绘图。
+
+5. 材料构建
+   通过 G4NistManager 获取水，再用 G4Isotope/G4Element 构建纯 ¹⁰B，以质量
+   分数混合入水来模拟含硼组织。外壳模型通过几何分区（外壳 vs 内核）赋予不同
+   硼浓度，保持单细胞总 ¹⁰B 量不变。
+
+
+四、源文件清单与职责
+--------------------------------------------------------------------------------
+
+src/main.cc                    程序入口，创建 RunManager，注册物理列表和用户类
+src/DetectorConstruction.cc    构建全部几何体和材料
+src/PrimaryGeneratorAction.cc  定义粒子束源（种类、能量、方向、野大小）
+src/SteppingAction.cc          步级计分（能量沉积、径迹长度、LET）
+src/EventAction.cc             事件级汇总（剂量、线能计算）
+src/runAction.cc               运行级管理（ROOT 文件输出、直方图预订）
+src/ActionInitialization.cc    组装并注册所有 Action 类
+include/SimulationConfig.hh    共享枚举定义（细胞编号、硼模型编号）
+
+macros/gamma.mac               6 MeV γ 射线，10000 事件，输出 gamma_6MeV.root
+macros/proton.mac              75 MeV 质子，10000 事件，输出 proton_75MeV.root
+macros/bnct_uniform.mac        0.5 eV 中子，均匀硼分布，40 ppm，20000 事件
+macros/bnct_shell.mac          0.5 eV 中子，外壳硼分布，40 ppm，20000 事件
+macros/vis.mac                 交互式可视化（OGL），20 事件
+
+scripts/run_all.sh             一键编译并运行全部宏
+scripts/make_bnct_scan_macros.py  生成不同硼浓度的扫描宏
+analysis/plot_results.C        ROOT 分析脚本，绘制剂量谱和 LET 谱
+
+
+五、工作流程
+--------------------------------------------------------------------------------
+
+    编译 (CMake)
+        ↓
+    运行宏文件 (gamma / proton / bnct_uniform / bnct_shell)
+        ↓
+    每个宏生成 .root 文件
+        ↓
+    plot_results.C 绘制剂量谱和 LET 谱
+        ↓
+    对比分析：Gamma vs 质子、均匀 vs 外壳硼分布
+
+
+六、宏观总结
+--------------------------------------------------------------------------------
+
+项目完整展示了 Geant4 模拟的标准流程：
+
+    几何建模 → 物理配置 → 粒子源定义 → 步级计分
+    → 事件汇总 → ROOT 输出 → 离线分析
+
+是一个结构清晰的放射治疗蒙特卡罗模拟教学案例。
+
+
+================================================================================
+  附录：各 Geant4 基类的详细使用方式（逐类剖析）
+================================================================================
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+A. G4RunManager 与程序入口（main.cc）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+G4RunManager 是 Geant4 的核心调度引擎，负责管理整个模拟的生命周期。用户的
+所有自定义类都通过它注册，形成一条完整的"初始化链"。
+
+本项目的 main.cc 中，程序启动后依次完成以下注册：
+
+    (1) auto* runManager = new G4RunManager;
+        创建运行管理器实例。此后所有用户类都通过它注册。
+
+    (2) auto* detector = new DetectorConstruction;
+        runManager->SetUserInitialization(detector);
+        注册探测器几何构造类。G4RunManager 会在初始化阶段调用其 Construct()
+        方法来构建整个物理世界。注意 detector 被保存为指针，后续传递给
+        ActionInitialization，使粒子源和计分逻辑能够查询几何信息。
+
+    (3) 物理列表的选取：
+        G4PhysListFactory physicsFactory;
+        auto* physicsList = physicsFactory.GetReferencePhysList(physicsName);
+        使用 Geant4 内置的 G4PhysListFactory 工厂类，通过名字字符串
+        （默认 "QGSP_BIC_HP"）获取一个预制的参考物理列表。这个工厂封装了
+        大量预定义物理列表，用户无需手动注册每一种物理过程。
+        然后通过 physicsList->RegisterPhysics(new G4StepLimiterPhysics) 额外
+        注册步长限制物理模块，使 G4UserLimits 能在追踪过程中生效。
+        最后 runManager->SetUserInitialization(physicsList) 完成注册。
+
+    (4) runManager->SetUserInitialization(new ActionInitialization(detector));
+        注册行为初始化类。该类内部会创建并注册所有四个 Action 子类。
+
+    (5) 可视化与命令执行：
+        auto* visManager = new G4VisExecutive;
+        visManager->Initialize();
+        初始化可视化引擎。然后分两条路径：
+        - 无命令行参数：创建 G4UIExecutive 交互式 Qt 窗口，先执行 vis.mac
+          初始化可视化设置，再启动交互会话。
+        - 有命令行参数：通过 G4UImanager::ApplyCommand 执行指定的宏文件，
+          进入批处理模式。
+
+核心要点：G4RunManager 本身不包含任何物理内容，它是"胶水"——把几何、物理、
+行为三大模块粘合在一起，驱动初始化→事件循环→结束的完整生命周期。
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+B. DetectorConstruction —— 几何与材料构建（继承 G4VUserDetectorConstruction）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+这是 Geant4 中最核心的用户类之一，负责构建整个"物理世界"——所有几何体、
+材料、以及它们的空间关系。G4RunManager 在初始化时调用它的 Construct() 方法，
+返回一个 G4VPhysicalVolume* 指针指向世界体积。
+
+本项目的实现分为以下几个层次：
+
+B1. 材料构建（ConstructMaterials 方法）
+──────────────────────────────────────
+
+    auto* nist = G4NistManager::Instance();
+    fAir   = nist->FindOrBuildMaterial("G4_AIR");
+    fTissue = nist->FindOrBuildMaterial("G4_WATER");
+
+G4NistManager 是 Geant4 内置的材料数据库管理器，提供上百种预定义材料。
+"G4_AIR" 和 "G4_WATER" 是 NIST 数据库中的标准材料标识符，直接调用即可获得
+精确的密度、成分、截面数据等属性。这是 Geant4 推荐的标准做法——避免手动
+定义常见材料。
+
+    auto* b10 = new G4Isotope("B10", 5, 10, 10.012937 * g / mole);
+    fB10Element = new G4Element("Boron10", "B10", 1);
+    fB10Element->AddIsotope(b10, 100.0 * perCent);
+
+对于 ¹⁰B 这种 NIST 数据库中没有直接作为独立材料的同位素，需要手动构建：
+- G4Isotope：定义同位素（原子序数 5，质量数 10，摩尔质量）
+- G4Element：将同位素封装为元素
+之后就可以在 BuildBoronLoadedTissue 中将这个元素按质量分数混合进水。
+
+B2. 含硼组织材料的动态构建（BuildBoronLoadedTissue 方法）
+──────────────────────────────────────────────────────
+
+    const auto massFraction = std::min<G4double>(clampedPPM * 1.0e-6, 0.05);
+    auto* material = new G4Material(name, fTissue->GetDensity(), 2,
+                                    kStateSolid, 293.15 * kelvin);
+    material->AddMaterial(fTissue, 1.0 - massFraction);
+    material->AddElement(fB10Element, massFraction);
+
+这段代码展示了 Geant4 材料构建的"混合"模式：
+- new G4Material(name, density, nComponents, state, temperature) 创建一个新材料
+- AddMaterial() 和 AddElement() 按质量分数添加成分
+- ppm (parts per million) 转换为质量分数：ppm * 1e-6
+- 设置上限 5% 防止不合理的极端浓度
+
+外壳模型的关键技巧：外壳体积只是整个细胞球的一小部分（约 29.6%），为了保持
+单细胞中 ¹⁰B 总量与均匀模型相同，外壳中的硼浓度需要除以 shellVolumeFraction，
+即：fBoronPPM / shellVolumeFraction。这是物理上等价性的保证。
+
+B3. 几何体构建（Construct 方法）
+──────────────────────────────
+
+Geant4 的几何系统采用三层结构：
+  固体（G4VSolid）  →  逻辑体积（G4LogicalVolume）  →  物理体积（G4VPhysicalVolume）
+
+- 固体：定义形状和尺寸（纯数学描述）
+- 逻辑体积：将固体与材料绑定，附加可视化属性、用户限制等
+- 物理体积：将逻辑体积放置到空间中具体位置，建立母子层次关系
+
+本项目的几何层次：
+
+    World (G4Box, 空气, 3m 立方)
+     ├── Body (G4Box, 水, 260×120×500 mm)
+     │    ├── TumorRegion (G4Box, 水, 20×10×30 mm)
+     │    │    ├── TumorCell (G4Sphere, r=5μm, 含硼或纯水)
+     │    │    │    └── [shell模式] CellCore (G4Sphere, r=4μm, 纯水)
+     │    │    └── NormalInTumorCell (G4Sphere, r=5μm, 纯水)
+     │    └── HealthyNormalCell (G4Sphere, r=5μm, 纯水)
+     ├── Neck (G4Tubs, 水, 圆柱)
+     ├── Head (G4Sphere, 水, 球)
+     ├── LeftLeg (G4Tubs, 水, 圆柱)
+     └── RightLeg (G4Tubs, 水, 圆柱)
+
+具体的代码模式（以 TumorRegion 为例）：
+
+    // 1. 创建固体——定义形状
+    auto* tumorRegionSolid = new G4Box("TumorRegionSolid",
+                                       10.0 * mm, 5.0 * mm, 15.0 * mm);
+
+    // 2. 创建逻辑体积——绑定材料
+    fTumorRegionLV = new G4LogicalVolume(tumorRegionSolid, fTissue, "TumorRegionLV");
+
+    // 3. 放置为物理体积——指定位置和母体积
+    new G4PVPlacement(nullptr, fTumorRegionCenterWorld, fTumorRegionLV,
+                      "TumorRegionPV", fBodyLV, false, 0, fCheckOverlaps);
+
+G4PVPlacement 的参数含义：
+- nullptr：无旋转
+- fTumorCenterWorld：在母体积坐标系中的位置
+- fTumorRegionLV：要放置的逻辑体积
+- "TumorRegionPV"：物理体积名称
+- fBodyLV：母逻辑体积（放在 Body 内部）
+- false, 0：不使用复制编号
+- fCheckOverlaps：是否检查几何重叠
+
+外壳模型的嵌套放置是一个精巧的设计：
+    // 外壳球（r=5μm）包含内核球（r=4μm）
+    fTumorCellShellLV = new G4LogicalVolume(fullCellSolid, tumorShellMaterial, ...);
+    fTumorCellCoreLV  = new G4LogicalVolume(coreCellSolid, fTissue, ...);
+    // 将内核放在外壳内部，位置为原点（同心）
+    new G4PVPlacement(nullptr, {}, fTumorCellCoreLV, "TumorCellCorePV",
+                      fTumorCellShellLV, ...);
+    // 将整个外壳（含内核）放在 TumorRegion 内
+    new G4PVPlacement(nullptr, {0.0, -2.0*mm, 0.0}, fTumorCellShellLV,
+                      "TumorCellPV", fTumorRegionLV, ...);
+
+这样 Geant4 追踪时，粒子进入外壳区域用外壳材料的截面数据，进入内核区域用
+纯水的截面数据，自然实现了亚细胞尺度上的材料分布差异。
+
+B4. 步长限制（G4UserLimits）
+──────────────────────────
+
+    auto* cellLimit = new G4UserLimits(1.0 * um);
+    fTumorCellLV->SetUserLimits(cellLimit);
+    fNormalInTumorLV->SetUserLimits(cellLimit);
+    fHealthyNormalLV->SetUserLimits(cellLimit);
+
+G4UserLimits 允许对特定逻辑体积设置追踪约束。这里设置了最大步长 1 μm，
+意味着粒子在细胞体积内的任何一步都不会超过 1 μm。这对 10 μm 直径的小球
+至关重要——如果步长太大（比如默认的几毫米），粒子可能"穿过"整个细胞只用
+一步，导致能量沉积的统计精度极差。
+
+注意：仅有 G4UserLimits 还不够，还需要在 main.cc 中注册 G4StepLimiterPhysics，
+否则步长限制不会被 Geant4 追踪引擎采纳。
+
+B5. 宏命令接口（G4GenericMessenger）
+──────────────────────────────────
+
+    fMessenger = new G4GenericMessenger(this, "/therapy/geometry/", ...);
+    fMessenger->DeclareProperty("tumorCellFraction", fTumorCellFraction, ...);
+    fMessenger->DeclareProperty("boronPPM", fBoronPPM, ...);
+    fMessenger->DeclareProperty("boronModel", fBoronModel, ...);
+
+G4GenericMessenger 是 Geant4 提供的轻量级宏命令注册工具。它将 C++ 成员变量
+直接暴露为可在 .mac 文件中设置的命令。例如在 bnct_uniform.mac 中：
+
+    /therapy/geometry/boronModel  uniform
+    /therapy/geometry/boronPPM    40
+
+这些值在 Construct() 被调用前就已设置好，因此几何构建时直接使用成员变量即可。
+DeclarePropertyWithUnit 还支持带单位的量，如肿瘤位置用 cm 表示。
+
+B6. 可视化属性（G4VisAttributes）
+────────────────────────────────
+
+    auto* bodyVis = new G4VisAttributes(G4Colour(0.0, 0.7, 0.25, 0.25));
+    bodyVis->SetForceSolid(true);
+    fBodyLV->SetVisAttributes(bodyVis);
+
+通过 G4VisAttributes 为每个逻辑体积设置颜色和透明度，使交互式可视化时能
+直观区分体模（绿色半透明）、肿瘤区域（红色半透明）、肿瘤细胞（深红色）、
+正常细胞（蓝色）等。World 体积设为不可见以避免干扰。
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+C. PhysicsList —— 物理过程配置（QGSP_BIC_HP + G4StepLimiterPhysics）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Geant4 的物理列表定义了粒子在物质中传播时经历的所有物理过程：电磁相互作用、
+强子级联、弹性散射、衰变等。本项目没有自定义物理列表类，而是使用 Geant4
+内置的参考物理列表。
+
+C1. G4PhysListFactory 获取参考物理列表
+────────────────────────────────────
+
+    G4PhysListFactory physicsFactory;
+    auto* physicsList = physicsFactory.GetReferencePhysList("QGSP_BIC_HP");
+
+G4PhysListFactory 是 Geant4 预置的工厂类，通过名称字符串即可获得完整的物理
+列表实例。"QGSP_BIC_HP" 的含义：
+- QGSP：Quark-Gluon String Precompound——高能强子相互作用模型
+- BIC：Binary Ion Cascade——中能离子级联模型
+- HP：High Precision——高精度低能中子截面（使用评价核数据库 ENDF）
+
+HP 模块对 BNCT 至关重要，因为它在热/超热中子能量范围内提供了精确的 ¹⁰B(n,α)⁷Li
+反应截面，这是硼中子俘获治疗的核心反应。
+
+C2. G4StepLimiterPhysics 的注册
+────────────────────────────
+
+    physicsList->RegisterPhysics(new G4StepLimiterPhysics);
+
+这是一个"修正物理模块"，它激活了 G4UserLimits 的步长限制功能。没有它，
+DetectorConstruction 中设置的 1 μm 步长限制将被忽略。这是一个常见的"坑"
+——很多初学者设置了 UserLimits 但忘记注册 StepLimiter，导致步长限制无效。
+
+C3. 物理列表覆盖的物理过程（自动配置）
+───────────────────────────────────
+
+QGSP_BIC_HP 会自动为所有常见粒子注册以下物理过程（用户无需手动配置）：
+- 光子：光电效应、康普顿散射、对产生
+- 电子/正电子：电离、轫致辐射、正电子湮灭
+- 质子：电离、弹性散射、非弹性强子反应
+- 中子：弹性散射、非弹性散射、俘获（包括 ¹⁰B(n,α)⁷Li）、裂变
+- 其他强子：各自的衰变和相互作用通道
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+D. PrimaryGeneratorAction —— 粒子源定义（继承 G4VUserPrimaryGeneratorAction）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+这个类定义了"谁来发起第一个粒子"——初级粒子的种类、能量、方向和起始位置。
+G4RunManager 在每个事件开始时调用 GeneratePrimaries(G4Event*) 方法。
+
+D1. G4ParticleGun 的使用
+──────────────────────
+
+    fParticleGun = new G4ParticleGun(1);  // 每事件 1 个初级粒子
+
+G4ParticleGun 是最简单的粒子源——每次发射一个（或多个）确定参数的粒子。
+更复杂的源可以使用 G4GeneralParticleSource（GPS），支持能量谱、角度分布等。
+
+D2. 粒子种类的动态选择
+─────────────────────
+
+    auto* particle = G4ParticleTable::GetParticleTable()->FindParticle(fParticleName);
+    fParticleGun->SetParticleDefinition(particle);
+
+G4ParticleTable 是全局粒子注册表，包含所有已知粒子（通过名称字符串查找）。
+本项目支持三种粒子：gamma、proton、neutron，通过宏命令切换。
+
+D3. 束流位置与方向的随机化
+─────────────────────────
+
+    const auto target = fDetector->GetTumorRegionCenterWorld();
+    const auto y = target.y() + (2.0 * G4UniformRand() - 1.0) * fBeamHalfY;
+    const auto z = target.z() + (2.0 * G4UniformRand() - 1.0) * fBeamHalfZ;
+
+G4UniformRand() 返回 [0,1) 均匀分布的随机数。这里实现了矩形野均匀采样：
+- 以肿瘤中心为基准
+- y 和 z 方向各在 [-beamHalfY, +beamHalfY] 和 [-beamHalfZ, +beamHalfZ] 范围内
+- x 方向固定在 sourceX（体模右侧外部）
+- 方向向量默认 (-1, 0, 0)，即从右向左照射
+
+注意：PrimaryGeneratorAction 构造时接收了 DetectorConstruction 的指针，
+这样就能调用 GetTumorRegionCenterWorld() 获取肿瘤位置，实现束流自动对准。
+
+D4. 宏命令接口
+────────────
+
+    /therapy/source/particle     proton
+    /therapy/source/energy       75 MeV
+    /therapy/source/sourceX      220 cm
+    /therapy/source/beamHalfY    8 cm
+    /therapy/source/beamHalfZ    18 cm
+    /therapy/source/directionX   -1
+    /therapy/source/directionY   0
+    /therapy/source/directionZ   0
+
+所有束流参数均可在 .mac 文件中设置，无需重编译。
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+E. SteppingAction —— 步级计分（继承 G4UserSteppingAction）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+这是整个模拟的"数据采集核心"。G4RunManager 在每个追踪步（step）完成后调用
+UserSteppingAction(G4Step*)。粒子每走一步（穿过一段距离、与原子核发生一次
+相互作用、或改变方向），这个方法就被调用一次。
+
+E1. 体积识别——判断粒子在哪个细胞中
+──────────────────────────────────
+
+    const auto* prePoint = step->GetPreStepPoint();
+    const auto* volume = prePoint->GetTouchableHandle()->GetVolume();
+    const auto* logical = volume->GetLogicalVolume();
+    const auto cellId = ClassifyVolume(logical->GetName());
+
+G4Step 包含两个端点：PreStepPoint（步的起点）和 PostStepPoint（步的终点）。
+通过 PreStepPoint 的 TouchableHandle 获取当前体积信息，然后用逻辑体积名称
+匹配来判断是哪个细胞。ClassifyVolume 方法用字符串比较实现：
+- "TumorCellLV" / "TumorCellShellLV" / "TumorCellCoreLV" → 肿瘤细胞
+- "TumorRegionNormalCellLV" → 肿瘤区内正常细胞
+- "HealthyNormalCellLV" → 远处健康正常细胞
+- 其他 → 返回 -1（不计分）
+
+这种基于逻辑体积名称的分类方法是 Geant4 计分的常用模式。
+
+E2. 能量沉积与步长获取
+─────────────────────
+
+    const auto edep = step->GetTotalEnergyDeposit();
+    const auto stepLength = step->GetStepLength();
+
+G4Step 提供了当前步的详细物理信息：
+- GetTotalEnergyDeposit()：该步中沉积的总能量（包括电离损失和辐射损失）
+- GetStepLength()：该步的实际长度
+
+如果 edep <= 0（粒子穿过但没有沉积能量），则跳过。
+
+E3. LET 代理值计算
+────────────────
+
+    const auto let = (stepLength > 0.0) ? (edep / keV) / (stepLength / um) : 0.0;
+
+线性能量传输（LET）= 能量沉积 / 路径长度，单位 keV/μm。这是每步的瞬时 LET
+代理值，用于构建 LET 谱。
+
+E4. 向 EventAction 传递数据
+─────────────────────────
+
+    fEventAction->AddCellStep(cellId, edep, stepLength);
+
+SteppingAction 不直接做统计汇总——它将每步的数据"汇报"给 EventAction，
+由后者在事件结束时统一处理。这是 Geant4 的标准分层设计：步级负责识别和
+采集，事件级负责汇总和输出。
+
+E5. 逐步详细数据写入 ROOT ntuple
+───────────────────────────────
+
+    analysis->FillNtupleIColumn(1, 0, eventId);
+    analysis->FillNtupleIColumn(1, 1, cellId);
+    analysis->FillNtupleIColumn(1, 2, pdg);
+    analysis->FillNtupleDColumn(1, 3, edep / keV);
+    analysis->FillNtupleDColumn(1, 4, stepLength / um);
+    analysis->FillNtupleDColumn(1, 5, let);
+    analysis->FillNtupleDColumn(1, 6, prePoint->GetKineticEnergy() / MeV);
+    analysis->AddNtupleRow(1);
+
+使用 G4AnalysisManager 写入第二个 ntuple（索引 1，即 "steps"）。
+每行记录一个步的完整信息，包括事件 ID、细胞 ID、粒子 PDG 编码、能量沉积、
+步长、LET、动能。这些逐步数据是后续精细分析（如按粒子种类筛选 LET 谱）
+的基础。
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+F. EventAction —— 事件级汇总（继承 G4UserEventAction）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+G4RunManager 在每个事件开始和结束时分别调用 BeginOfEventAction 和
+EndOfEventAction。这个类负责将一个事件中所有步的数据汇总为物理量。
+
+F1. BeginOfEventAction —— 初始化累加器
+───────────────────────────────────
+
+    void EventAction::BeginOfEventAction(const G4Event*)
+    {
+      fEdep.fill(0.0);
+      fTrackLength.fill(0.0);
+    }
+
+每个事件开始时，将三个细胞的能量沉积和径迹长度累加器清零。std::array<double,3>
+的 fill(0.0) 是 C++11 的批量初始化方式。
+
+F2. AddCellStep —— 步级数据的累加
+────────────────────────────────
+
+    void EventAction::AddCellStep(G4int cellId, G4double edep, G4double stepLength)
+    {
+      fEdep[cellId] += edep;
+      fTrackLength[cellId] += stepLength;
+    }
+
+SteppingAction 每步调用此方法，将能量沉积和步长累加到对应细胞的数组元素中。
+这是"步级→事件级"的数据传递接口。
+
+F3. EndOfEventAction —— 物理量计算与输出
+──────────────────────────────────────
+
+    // 剂量计算：D = E_dep / m，转换为 Gy
+    dose[cellId] = (mass > 0.0) ? (fEdep[cellId] / mass) / gray : 0.0;
+
+    // 线能计算：y = E_dep / <l>，其中 <l> = 4R/3 为球体平均弦长
+    const auto meanChord = (4.0 * 5.0 * um) / 3.0;  // ≈ 6.67 μm
+    lineal[cellId] = (meanChord > 0.0) ? (fEdep[cellId] / keV) / (meanChord / um) : 0.0;
+
+两个关键物理量：
+- 剂量（Dose）：单位质量吸收的能量，单位 Gy（= J/kg）。mass 来自
+  DetectorConstruction::GetCellMass()，根据细胞体积和材料密度计算。
+- 线能（Lineal Energy）：y = ε / l̄，其中 ε 是能量沉积，l̄ 是平均弦长。
+  对于球体，l̄ = 4R/3（Chord-length distribution 的经典结果）。
+  这是微剂量学的核心量，用于描述辐射品质。
+
+F4. 肿瘤区混合分数加权
+────────────────────
+
+    const auto mixedDose =
+        tumorFraction * dose[kTumorCell] +
+        normalFraction * dose[kNormalCellInTumorRegion];
+
+肿瘤区不是纯肿瘤细胞——现实中有 80% 肿瘤细胞和 20% 正常细胞。这个加权
+剂量更接近临床实际情况。默认 tumorFraction = 0.80，可通过宏命令调整。
+
+F5. 数据写入 ROOT ntuple
+──────────────────────
+
+每事件写入 4 行（3 个独立细胞 + 1 个加权混合），每行包含 9 列：
+event_id, cell_id, edep_MeV, dose_Gy, track_um, lineal_keV_um,
+boron_ppm, boron_model_id, tumor_cell_fraction。
+
+同时填充 4 个剂量直方图（h1 索引 1-4），用于快速查看剂量分布。
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+G. RunAction —— 运行级管理（继承 G4UserRunAction）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+G4RunManager 在整个运行（Run，即一批事件的集合）开始和结束时调用此类。
+
+G1. G4AnalysisManager 的初始化（BookAnalysis 方法）
+─────────────────────────────────────────────────
+
+    auto* analysis = G4AnalysisManager::Instance();
+    analysis->SetFileName(fFileName);
+    analysis->SetFirstHistoId(1);
+
+G4AnalysisManager 是 Geant4 内置的分析输出管理器（单例模式），底层默认使用
+ROOT 格式。BookAnalysis 在构造时就预订好所有输出对象：
+
+直方图（5 个）：
+    H1(1): 肿瘤细胞每事件剂量谱
+    H1(2): 肿瘤区内正常细胞每事件剂量谱
+    H1(3): 远处健康正常细胞每事件剂量谱
+    H1(4): 加权混合肿瘤区每事件剂量谱
+    H1(5): 逐步 LET 代理谱
+
+ntuple（2 个）：
+    Ntuple 0 "events": 每事件每细胞一行（9 列）
+    Ntuple 1 "steps":  每步一行（7 列）
+
+G2. 文件的打开与关闭
+──────────────────
+
+    void RunAction::BeginOfRunAction(const G4Run*) {
+      analysis->SetFileName(fFileName);
+      analysis->OpenFile();
+    }
+    void RunAction::EndOfRunAction(const G4Run*) {
+      analysis->Write();
+      analysis->CloseFile();
+    }
+
+运行开始时打开 ROOT 文件，运行结束时写入并关闭。这是标准的 ROOT I/O 模式。
+输出文件名通过宏命令 /therapy/output/fileName 设置，如 "gamma_6MeV"。
+
+G3. 宏命令接口
+────────────
+
+    /therapy/output/fileName  gamma_6MeV
+
+在 .mac 文件中设置输出文件名，不同的宏使用不同的文件名以区分结果。
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+H. ActionInitialization —— 行为类组装（继承 G4VUserActionInitialization）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+这是所有 Action 类的"装配工厂"。G4RunManager 调用其 Build() 方法来创建和
+注册所有用户行为类。
+
+    void ActionInitialization::Build() const
+    {
+      SetUserAction(new PrimaryGeneratorAction(fDetector));
+      SetUserAction(new RunAction(fDetector));
+
+      auto* eventAction = new EventAction(fDetector);
+      SetUserAction(eventAction);
+      SetUserAction(new SteppingAction(eventAction));
+    }
+
+关键设计：
+- PrimaryGeneratorAction 和 RunAction 各自独立，都接收 DetectorConstruction
+  指针以查询几何信息。
+- EventAction 也接收 DetectorConstruction 指针（用于获取细胞质量和硼参数）。
+- SteppingAction 接收 EventAction 指针（而非 DetectorConstruction），因为它
+  需要通过 AddCellStep() 向 EventAction 传递数据。
+- SetUserAction() 是 Geant4 的注册机制，RunManager 会在适当的时机调用各
+  Action 的对应方法。
+
+注意：在多线程模式下，Build() 会被每个工作线程各调用一次，每个线程获得自己
+的 Action 实例。本项目使用单线程模式（默认），因此只有一个实例。
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+I. SimulationConfig.hh —— 共享配置
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    enum CellScoreId {
+      kTumorCell = 0,
+      kNormalCellInTumorRegion = 1,
+      kHealthyNormalCell = 2,
+      kTumorRegionMixture = 3
+    };
+
+这个枚举是整个项目的"通信协议"——SteppingAction、EventAction 都用它来标识
+哪个细胞是哪个。使用枚举而非魔术数字，使代码可读且不易出错。
+
+    inline int BoronModelId(const G4String& model)
+    {
+      if (model == "uniform") return 1;
+      if (model == "shell")   return 2;
+      return 0;
+    }
+
+将硼模型名称映射为整数 ID，用于 ROOT ntuple 输出（ROOT 不直接支持字符串
+列）。
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+J. 各类之间的数据流与协作关系
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+整个模拟的数据流可以概括为：
+
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │                        G4RunManager                                │
+    │  初始化时调用 Construct()，运行时驱动事件循环                       │
+    └──────┬──────────────────────────────┬───────────────────────────────┘
+           │                              │
+    ┌──────▼──────────┐           ┌───────▼──────────────────────────────┐
+    │ DetectorConst-  │           │ ActionInitialization                 │
+    │ ruction         │           │   创建并注册 4 个 Action             │
+    │                 │           └───────┬──────────────────────────────┘
+    │ 构建几何体      │                   │
+    │ 构建材料        │     ┌─────────────┼─────────────┬──────────────┐
+    │ 设置步长限制    │     │             │             │              │
+    │ 暴露宏命令      │     ▼             ▼             ▼              ▼
+    │                 │  PrimaryGen  RunAction    EventAction   SteppingAction
+    │ 提供查询接口:   │  erAction
+    │  GetCellMass()  │     │             │             │              │
+    │  GetTumorCenter │  发射粒子     预订直方图    清零累加器     每步判断体积
+    │  GetBoronPPM()  │  随机位置     打开文件      AddCellStep()  获取 edep
+    │  GetBoronModel()│  设置方向     关闭文件      计算剂量/线能  计算 LET
+    │  GetTumorFrac() │               写入文件      写入 ntuple    写入 ntuple
+    └─────────────────┘
+                                                        ↑
+                                                        │
+                                            SteppingAction 调用
+                                            EventAction::AddCellStep()
+                                            传递每步数据
+
+跨类通信的关键设计模式：
+- DetectorConstruction 作为"信息中心"，被 PrimaryGeneratorAction、RunAction、
+  EventAction 共享查询。它在 Construct() 阶段构建几何，在运行阶段只提供
+  只读查询（GetCellMass 等）。
+- EventAction 作为"数据中转站"，由 SteppingAction 在每步写入数据，在事件
+  结束时汇总并输出。
+- G4AnalysisManager 是全局单例，任何类都可以通过 Instance() 获取指针来
+  填充直方图和 ntuple。
+
+这种分层设计——步级采集、事件级汇总、运行级输出——是 Geant4 模拟的
+标准范式，保证了代码的清晰性和可维护性。

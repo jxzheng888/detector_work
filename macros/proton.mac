@@ -19,5 +19,5 @@
 
 /run/setCut 0.1 um
 /run/initialize
-/therapy/output/fileName proton_75MeV
+/therapy/output/fileName proton_75MeV.root
 /run/beamOn 10000
