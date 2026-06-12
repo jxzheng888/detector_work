@@ -1,7 +1,9 @@
 #ifndef STEPPING_ACTION_HH
 #define STEPPING_ACTION_HH
 
+#include "G4String.hh"
 #include "G4UserSteppingAction.hh"
+#include "globals.hh"
 
 class EventAction;
 class G4Step;
