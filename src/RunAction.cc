@@ -24,7 +24,7 @@ void RunAction::DefineCommands()
   fMessenger = new G4GenericMessenger(this, "/therapy/output/",
                                       "Output controls");
   fMessenger->DeclareProperty("fileName", fFileName,
-                              "Output ROOT file name without extension.");
+                              "Output ROOT file name, including .root extension.");
 }
 
 void RunAction::BookAnalysis()
@@ -32,6 +32,7 @@ void RunAction::BookAnalysis()
   auto* analysis = G4AnalysisManager::Instance();
   analysis->SetVerboseLevel(1);
   analysis->SetFirstHistoId(1);
+  analysis->SetDefaultFileType("root");
   analysis->SetFileName(fFileName);
 
   analysis->CreateH1("tumor_cell_dose", "Tumor cell dose per event;dose (Gy);events",

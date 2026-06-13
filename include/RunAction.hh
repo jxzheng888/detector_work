@@ -22,7 +22,7 @@ class RunAction final : public G4UserRunAction {
 
   const DetectorConstruction* fDetector = nullptr;
   G4GenericMessenger* fMessenger = nullptr;
-  G4String fFileName = "therapy_output";
+  G4String fFileName = "therapy_output.root";
 };
 
 #endif

@@ -15,6 +15,7 @@
 
 /run/setCut 0.1 um
 /run/initialize
+/therapy/output/fileName vis.root
 
 /vis/open OGL
 /vis/viewer/set/background white
